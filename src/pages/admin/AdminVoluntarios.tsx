@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Check,
@@ -35,14 +35,10 @@ const LAST_SYNC_KEY = 'mk_admin_last_sync_v1';
 const FETCH_TIMEOUT_MS = 8000;
 const POLL_INTERVAL_MS = 30000;
 
-interface ExtendedPlayer extends PlayerRegistration {
-  created_at?: string;
-}
-
-function loadCachedPlayers(): ExtendedPlayer[] {
+function loadCachedPlayers(): PlayerRegistration[] {
   try {
     const raw = localStorage.getItem(CACHE_PLAYERS_KEY);
-    return raw ? (JSON.parse(raw) as ExtendedPlayer[]) : [];
+    return raw ? (JSON.parse(raw) as PlayerRegistration[]) : [];
   } catch {
     return [];
   }
@@ -62,14 +58,14 @@ function saveSeenIds(ids: Set<string>) {
   try {
     localStorage.setItem(SEEN_IDS_KEY, JSON.stringify(Array.from(ids)));
   } catch {
-    // Ignorar
+    // Ignorar se storage estiver cheio
   }
 }
 
 export default function AdminVoluntarios() {
   const navigate = useNavigate();
 
-  const [players, setPlayers] = useState<ExtendedPlayer[]>(() =>
+  const [players, setPlayers] = useState<PlayerRegistration[]>(() =>
     loadCachedPlayers()
   );
   const [seenIds, setSeenIds] = useState<Set<string>>(
@@ -136,11 +132,11 @@ export default function AdminVoluntarios() {
         if (error) throw error;
 
         if (data) {
-          const normalized: ExtendedPlayer[] = data.map((row: any) => ({
+          const normalized: PlayerRegistration[] = data.map((row: any) => ({
             id: String(row.id),
             full_name: row.full_name || row.name || 'Sem nome',
             phone: row.phone || '',
-            created_at: row.created_at,
+            created_at: row.created_at || '',
             status:
               row.status === 'pending' || !row.status
                 ? 'pendente'
@@ -160,7 +156,7 @@ export default function AdminVoluntarios() {
             setLastSync(nowStr);
             localStorage.setItem(LAST_SYNC_KEY, nowStr);
           } catch {
-            // Ignorar
+            // Ignorar erro de quota
           }
 
           if (!hasInitializedSeen) {
@@ -261,7 +257,7 @@ export default function AdminVoluntarios() {
   }, [fetchPlayers, players.length]);
 
   const openWhatsAppApp = (
-    player: ExtendedPlayer,
+    player: PlayerRegistration,
     status: 'confirmado' | 'recusado'
   ) => {
     const cleanCandidateDigits = player.phone.replace(/\D/g, '');
@@ -282,7 +278,7 @@ export default function AdminVoluntarios() {
   };
 
   const handleDecision = async (
-    player: ExtendedPlayer,
+    player: PlayerRegistration,
     newStatus: 'confirmado' | 'recusado'
   ) => {
     if (!isOnline) {
@@ -667,7 +663,6 @@ export default function AdminVoluntarios() {
         </Link>
       </footer>
 
-      {/* Modal do Código QR */}
       <RegistrationQrModal
         isOpen={isQrOpen}
         onClose={() => setIsQrOpen(false)}
