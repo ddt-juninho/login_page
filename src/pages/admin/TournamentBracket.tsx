@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -9,12 +9,13 @@ import {
   RotateCcw,
   Swords,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import type { PlayerRegistration } from '../../types/volunteer';
 import DragonEmblem from '../../components/DragonEmblem';
+import { supabase } from '../../lib/supabase';
 
-const STORAGE_KEY = 'mk_tournament_registrations';
-const BRACKET_STORAGE_KEY = 'mk_tournament_bracket_state';
+const BRACKET_STORAGE_KEY = 'mk_tournament_bracket_state_v2';
 
 interface BracketState {
   rounds: (PlayerRegistration | null)[][];
@@ -40,11 +41,11 @@ function buildDynamicPalette(
   players.forEach((player, index) => {
     const hue = Math.round((baseHueOffset + index * goldenAngle) % 360);
     map[player.id] = {
-      baseBg: `hsla(${hue}, 65%, 16%, 0.72)`,
-      winBg: `hsla(${hue}, 82%, 28%, 0.85)`,
-      accentColor: `hsl(${hue}, 90%, 56%)`,
-      textColor: `hsl(${hue}, 95%, 92%)`,
-      badgeBg: `hsl(${hue}, 90%, 54%)`,
+      baseBg: `hsl(${hue}, 45%, 14%)`,
+      winBg: `hsl(${hue}, 65%, 24%)`,
+      accentColor: `hsl(${hue}, 85%, 54%)`,
+      textColor: `hsl(${hue}, 90%, 92%)`,
+      badgeBg: `hsl(${hue}, 85%, 54%)`,
     };
   });
 
@@ -58,6 +59,8 @@ export default function TournamentBracket() {
     benchedPlayer: null,
     champion: null,
   });
+  const [loadingPlayers, setLoadingPlayers] = useState(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [isShuffling, setIsShuffling] = useState(false);
 
   const fighterColors = useMemo(
@@ -65,84 +68,144 @@ export default function TournamentBracket() {
     [confirmedPlayers]
   );
 
-  useEffect(() => {
-    const savedPlayersRaw = localStorage.getItem(STORAGE_KEY);
-    const allPlayers: PlayerRegistration[] = savedPlayersRaw
-      ? JSON.parse(savedPlayersRaw)
-      : [];
-    const confirmed = allPlayers.filter((p) => p.status === 'confirmado');
-    setConfirmedPlayers(confirmed);
-
-    const savedBracketRaw = localStorage.getItem(BRACKET_STORAGE_KEY);
-    if (savedBracketRaw) {
-      setBracket(JSON.parse(savedBracketRaw));
-    } else if (confirmed.length >= 2) {
-      generateSmartDraw(confirmed, false);
+  const saveBracketState = useCallback((newState: BracketState) => {
+    setBracket(newState);
+    try {
+      localStorage.setItem(BRACKET_STORAGE_KEY, JSON.stringify(newState));
+    } catch {
+      // Ignorar
     }
   }, []);
 
-  const saveBracketState = (newState: BracketState) => {
-    setBracket(newState);
-    localStorage.setItem(BRACKET_STORAGE_KEY, JSON.stringify(newState));
-  };
+  const generateSmartDraw = useCallback(
+    (playersList: PlayerRegistration[], animate = true) => {
+      if (playersList.length < 2) {
+        saveBracketState({ rounds: [], benchedPlayer: null, champion: null });
+        return;
+      }
 
-  const generateSmartDraw = (
-    playersList: PlayerRegistration[],
-    animate = true
-  ) => {
-    if (playersList.length < 2) {
-      saveBracketState({ rounds: [], benchedPlayer: null, champion: null });
-      return;
+      if (animate) setIsShuffling(true);
+
+      window.setTimeout(
+        () => {
+          const pool = [...playersList];
+          for (let i = pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+          }
+
+          let benched: PlayerRegistration | null = null;
+          if (pool.length % 2 !== 0) {
+            benched = pool.pop() || null;
+          }
+
+          const activeCount = pool.length;
+          let bracketSlots = 2;
+          while (bracketSlots < activeCount) {
+            bracketSlots *= 2;
+          }
+
+          const round1: (PlayerRegistration | null)[] = Array(bracketSlots).fill(
+            null
+          );
+          for (let i = 0; i < activeCount; i++) {
+            round1[i] = pool[i];
+          }
+
+          const totalRounds = Math.log2(bracketSlots);
+          const rounds: (PlayerRegistration | null)[][] = [round1];
+
+          let currentSlots = bracketSlots / 2;
+          for (let r = 1; r < totalRounds; r++) {
+            rounds.push(Array(currentSlots).fill(null));
+            currentSlots /= 2;
+          }
+
+          saveBracketState({
+            rounds,
+            benchedPlayer: benched,
+            champion: null,
+          });
+
+          setIsShuffling(false);
+        },
+        animate ? 150 : 0
+      );
+    },
+    [saveBracketState]
+  );
+
+  const fetchConfirmedFromSupabase = useCallback(async () => {
+    setLoadingPlayers(true);
+    setSyncError(null);
+
+    try {
+      const { data, error } = await supabase
+        .from('mk_registrations')
+        .select('id, full_name, name, phone, status, created_at')
+        .eq('status', 'confirmado')
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      const realConfirmed: PlayerRegistration[] = (data || []).map(
+        (row: any) => ({
+          id: String(row.id),
+          full_name: row.full_name || row.name || 'Sem nome',
+          phone: row.phone || '',
+          status: 'confirmado',
+          created_at: row.created_at || new Date().toISOString(),
+        })
+      );
+
+      setConfirmedPlayers(realConfirmed);
+
+      if (realConfirmed.length < 2) {
+        saveBracketState({ rounds: [], benchedPlayer: null, champion: null });
+        return;
+      }
+
+      const validIds = new Set(realConfirmed.map((p) => p.id));
+      const savedRaw = localStorage.getItem(BRACKET_STORAGE_KEY);
+
+      if (savedRaw) {
+        try {
+          const parsed: BracketState = JSON.parse(savedRaw);
+          const bracketIds = new Set<string>();
+
+          parsed.rounds.forEach((round) =>
+            round.forEach((slot) => {
+              if (slot) bracketIds.add(slot.id);
+            })
+          );
+          if (parsed.benchedPlayer) bracketIds.add(parsed.benchedPlayer.id);
+
+          const isSameRoster =
+            bracketIds.size === validIds.size &&
+            Array.from(bracketIds).every((id) => validIds.has(id));
+
+          if (isSameRoster && parsed.rounds.length > 0) {
+            setBracket(parsed);
+            return;
+          }
+        } catch {
+          // Ignorar
+        }
+      }
+
+      generateSmartDraw(realConfirmed, false);
+    } catch {
+      setSyncError(
+        'Não foi possível carregar os jogadores confirmados da base de dados. Verifica a ligação.'
+      );
+    } finally {
+      setLoadingPlayers(false);
     }
+  }, [generateSmartDraw, saveBracketState]);
 
-    if (animate) setIsShuffling(true);
-
-    setTimeout(
-      () => {
-        const pool = [...playersList];
-        for (let i = pool.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-
-        let benched: PlayerRegistration | null = null;
-        if (pool.length % 2 !== 0) {
-          benched = pool.pop() || null;
-        }
-
-        const activeCount = pool.length;
-        let bracketSlots = 2;
-        while (bracketSlots < activeCount) {
-          bracketSlots *= 2;
-        }
-
-        const round1: (PlayerRegistration | null)[] = Array(bracketSlots).fill(
-          null
-        );
-        for (let i = 0; i < activeCount; i++) {
-          round1[i] = pool[i];
-        }
-
-        const totalRounds = Math.log2(bracketSlots);
-        const rounds: (PlayerRegistration | null)[][] = [round1];
-
-        let currentSlots = bracketSlots / 2;
-        for (let r = 1; r < totalRounds; r++) {
-          rounds.push(Array(currentSlots).fill(null));
-          currentSlots /= 2;
-        }
-
-        saveBracketState({
-          rounds,
-          benchedPlayer: benched,
-          champion: null,
-        });
-
-        setIsShuffling(false);
-      },
-      animate ? 350 : 0
-    );
-  };
+  useEffect(() => {
+    fetchConfirmedFromSupabase();
+  }, [fetchConfirmedFromSupabase]);
 
   const handleSelectWinner = (
     roundIndex: number,
@@ -208,13 +271,12 @@ export default function TournamentBracket() {
 
   return (
     <div className="min-h-screen bg-[#070709] text-zinc-100 flex flex-col justify-between">
-      {/* Header sólido para evitar sobrecarga de compositing no scroll */}
-      <header className="border-b border-zinc-800 bg-zinc-950 sticky top-0 z-30">
+      <header className="border-b border-zinc-800 bg-zinc-950">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Link
               to="/admin/voluntarios"
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-300 hover:text-amber-400 bg-zinc-900 px-3 py-2 rounded-xl border border-zinc-800 transition-colors duration-150"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-300 hover:text-amber-400 bg-zinc-900 px-3 py-2 rounded-xl border border-zinc-800"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Voltar ao Admin</span>
@@ -228,12 +290,28 @@ export default function TournamentBracket() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchConfirmedFromSupabase}
+              disabled={loadingPlayers}
+              title="Sincronizar jogadores confirmados com a base de dados"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-semibold border border-zinc-800 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${
+                  loadingPlayers ? 'text-amber-400' : ''
+                }`}
+              />
+              <span className="hidden sm:inline">
+                {loadingPlayers ? 'A sincronizar...' : 'Sincronizar'}
+              </span>
+            </button>
+
             {bracket.rounds.length > 0 && (
               <button
                 onClick={resetProgressOnly}
                 title="Limpar vencedores avançados mantendo o mesmo sorteio"
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 active:scale-[0.98] text-zinc-300 text-xs font-semibold border border-zinc-800 transition-transform duration-150 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-semibold border border-zinc-800 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Limpar Vencedores</span>
@@ -242,12 +320,10 @@ export default function TournamentBracket() {
 
             <button
               onClick={() => generateSmartDraw(confirmedPlayers, true)}
-              disabled={confirmedPlayers.length < 2 || isShuffling}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 active:scale-[0.98] disabled:opacity-40 text-zinc-950 text-xs font-black uppercase tracking-wider transition-transform duration-150 cursor-pointer"
+              disabled={confirmedPlayers.length < 2 || isShuffling || loadingPlayers}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-zinc-950 text-xs font-black uppercase tracking-wider cursor-pointer"
             >
-              <Shuffle
-                className={`w-4 h-4 gpu-layer ${isShuffling ? 'animate-spin' : ''}`}
-              />
+              <Shuffle className="w-4 h-4" />
               <span>
                 {isShuffling ? 'A Sortear...' : 'Sortear Candidatos'}
               </span>
@@ -257,14 +333,31 @@ export default function TournamentBracket() {
       </header>
 
       <main className="max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 space-y-6 flex-1">
+        {syncError && (
+          <div className="p-3.5 rounded-2xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+              <span>{syncError}</span>
+            </div>
+            <button
+              onClick={fetchConfirmedFromSupabase}
+              className="underline font-bold text-red-200 hover:text-white cursor-pointer"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-4 bg-zinc-900 border border-zinc-800 rounded-2xl px-5 py-3.5 text-xs">
           <div className="flex flex-wrap items-center gap-4">
             <span className="flex items-center gap-1.5 text-zinc-300">
               <Users className="w-4 h-4 text-amber-400" />
-              Confirmados:{' '}
-              <strong className="text-white">{confirmedPlayers.length}</strong>
+              Confirmados na Base de Dados:{' '}
+              <strong className="text-white">
+                {loadingPlayers ? '...' : confirmedPlayers.length}
+              </strong>
             </span>
-            {totalSlots > 0 && (
+            {totalSlots > 0 && !loadingPlayers && (
               <span className="flex items-center gap-1.5 text-zinc-300">
                 <Swords className="w-4 h-4 text-red-400" />
                 Capacidade gerada no mapa:{' '}
@@ -273,19 +366,27 @@ export default function TournamentBracket() {
             )}
           </div>
           <p className="text-zinc-400">
-            Cada lutador recebe uma cor exclusiva gerada automaticamente. Clica num nome para avançar.
+            Clica num lutador para avançá-lo para a fase seguinte do mapa.
           </p>
         </div>
 
-        {confirmedPlayers.length < 2 ? (
+        {loadingPlayers ? (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-12 text-center space-y-3">
+            <p className="text-xs font-semibold text-amber-400">
+              A carregar lutadores confirmados da base de dados...
+            </p>
+          </div>
+        ) : confirmedPlayers.length < 2 ? (
           <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-12 text-center space-y-4">
             <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
             <h2 className="text-lg font-bold text-white">
               Jogadores Confirmados Insuficientes
             </h2>
             <p className="text-xs text-zinc-400 max-w-md mx-auto">
-              É necessário ter pelo menos <strong>2 candidatos confirmados</strong>{' '}
-              no painel administrativo para gerar o mapa e realizar o sorteio.
+              Existem atualmente <strong>{confirmedPlayers.length}</strong>{' '}
+              candidatos confirmados na base de dados. É necessário confirmar pelo
+              menos <strong>2 candidatos</strong> no painel administrativo para
+              gerar o mapa.
             </p>
             <Link
               to="/admin/voluntarios"
@@ -296,8 +397,8 @@ export default function TournamentBracket() {
           </div>
         ) : (
           <>
-            <div className="bg-[#0b0c10] border border-zinc-800 rounded-3xl p-6 sm:p-8 overflow-x-auto shadow-xl relative paint-contain">
-              <div className="min-w-[780px] flex items-stretch justify-between gap-6">
+            <div className="bg-[#0b0c10] border border-zinc-800 rounded-3xl p-5 sm:p-7 overflow-x-auto card-lite">
+              <div className="min-w-[760px] flex items-stretch justify-between gap-6">
                 {bracket.rounds.map((roundSlots, roundIdx) => {
                   const matches: [
                     PlayerRegistration | null,
@@ -310,7 +411,7 @@ export default function TournamentBracket() {
                   return (
                     <div
                       key={roundIdx}
-                      className="flex-1 flex flex-col justify-between min-w-[215px]"
+                      className="flex-1 flex flex-col justify-between min-w-[210px]"
                     >
                       <div className="text-center mb-5 pb-2 border-b border-zinc-800">
                         <span className="text-[11px] font-extrabold uppercase tracking-widest text-zinc-400">
@@ -369,9 +470,9 @@ export default function TournamentBracket() {
                                         }
                                       : undefined
                                   }
-                                  className={`relative w-full pl-4 pr-3 py-2 text-left text-xs font-bold uppercase tracking-wide flex items-center justify-between border-b border-zinc-800 transition-opacity duration-150 ${
+                                  className={`relative w-full pl-4 pr-3 py-2 text-left text-xs font-bold uppercase tracking-wide flex items-center justify-between border-b border-zinc-800 ${
                                     playerA
-                                      ? 'active:opacity-80 cursor-pointer'
+                                      ? 'cursor-pointer'
                                       : 'bg-zinc-950 text-zinc-700 cursor-default h-8'
                                   }`}
                                 >
@@ -419,9 +520,9 @@ export default function TournamentBracket() {
                                         }
                                       : undefined
                                   }
-                                  className={`relative w-full pl-4 pr-3 py-2 text-left text-xs font-bold uppercase tracking-wide flex items-center justify-between transition-opacity duration-150 ${
+                                  className={`relative w-full pl-4 pr-3 py-2 text-left text-xs font-bold uppercase tracking-wide flex items-center justify-between ${
                                     playerB
-                                      ? 'active:opacity-80 cursor-pointer'
+                                      ? 'cursor-pointer'
                                       : 'bg-zinc-950 text-zinc-700 cursor-default h-8'
                                   }`}
                                 >
@@ -450,7 +551,7 @@ export default function TournamentBracket() {
                               </div>
 
                               <div className="w-6 flex items-center">
-                                <div className="w-full h-[2px] bg-zinc-600/80" />
+                                <div className="w-full h-[2px] bg-zinc-700" />
                               </div>
                             </div>
                           );
@@ -463,13 +564,9 @@ export default function TournamentBracket() {
                 {/* Coluna Final do Troféu / Campeão */}
                 <div className="flex flex-col justify-center items-center min-w-[200px] pl-2 border-l border-zinc-800">
                   <div className="text-center space-y-4 p-5 rounded-2xl bg-zinc-900 border border-amber-500/30 w-full">
-                    <div
-                      className={`relative mx-auto w-16 h-16 rounded-full bg-amber-500/15 border border-amber-500/40 flex items-center justify-center transition-transform duration-300 gpu-layer ${
-                        bracket.champion ? 'scale-110' : 'scale-100'
-                      }`}
-                    >
+                    <div className="mx-auto w-14 h-14 rounded-full bg-amber-500/15 border border-amber-500/40 flex items-center justify-center">
                       <Trophy
-                        className={`w-8 h-8 ${
+                        className={`w-7 h-7 ${
                           bracket.champion
                             ? 'text-amber-400'
                             : 'text-amber-500/60'
@@ -516,7 +613,7 @@ export default function TournamentBracket() {
 
             {/* Secção Inferior: Candidato De Fora */}
             {bracket.benchedPlayer && benchedStyle && (
-              <div className="bg-zinc-900 border border-amber-500/40 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 paint-contain">
+              <div className="bg-zinc-900 border border-amber-500/40 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 card-lite">
                 <div className="flex items-start sm:items-center gap-3.5">
                   <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 shrink-0">
                     <UserX className="w-5 h-5" />

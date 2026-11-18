@@ -3,7 +3,6 @@
 @layer base {
   html {
     -webkit-tap-highlight-color: transparent;
-    scroll-behavior: smooth;
   }
 
   body {
@@ -14,25 +13,19 @@
   }
 }
 
-/* Aceleração de hardware e isolamento de pintura para telemóveis fracos */
-.gpu-layer {
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform;
+/* Isola a pintura e evita renderizar cartões fora do ecrã em telemóveis fracos */
+.card-lite {
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 130px;
 }
 
-.paint-contain {
-  contain: layout paint;
-}
-
-/* Pausa automaticamente todas as animações quando o telemóvel está em Modo Poupança de Bateria */
+/* Desativa qualquer animação residual se o sistema estiver em poupança de energia */
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
   ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
   }
 }

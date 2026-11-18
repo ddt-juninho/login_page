@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Check,
   X,
@@ -7,7 +7,6 @@ import {
   Trash2,
   Trophy,
   ArrowLeft,
-  MessageCircle,
   AlertCircle,
   CheckCircle2,
   XCircle,
@@ -17,21 +16,24 @@ import {
   WifiOff,
   Sparkles,
   CheckCheck,
+  LogOut,
+  QrCode,
 } from 'lucide-react';
 import type {
   PlayerRegistration,
   RegistrationStatus,
 } from '../../types/volunteer';
 import DragonEmblem from '../../components/DragonEmblem';
+import RegistrationQrModal from '../../components/RegistrationQrModal';
 import { supabase } from '../../lib/supabase';
+import { ADMIN_AUTH_KEY } from '../../components/ProtectedAdminRoute';
 
-const ADMIN_PHONE_KEY = 'mk_tournament_admin_phone';
 const CACHE_PLAYERS_KEY = 'mk_admin_players_cache_v1';
 const SEEN_IDS_KEY = 'mk_admin_seen_ids_v1';
 const LAST_SYNC_KEY = 'mk_admin_last_sync_v1';
 
 const FETCH_TIMEOUT_MS = 8000;
-const POLL_INTERVAL_MS = 25000;
+const POLL_INTERVAL_MS = 30000;
 
 interface ExtendedPlayer extends PlayerRegistration {
   created_at?: string;
@@ -60,12 +62,13 @@ function saveSeenIds(ids: Set<string>) {
   try {
     localStorage.setItem(SEEN_IDS_KEY, JSON.stringify(Array.from(ids)));
   } catch {
-    // Ignorar se storage estiver cheio
+    // Ignorar
   }
 }
 
 export default function AdminVoluntarios() {
-  // Inicia logo com cache local para carregamento instantâneo em internet fraca
+  const navigate = useNavigate();
+
   const [players, setPlayers] = useState<ExtendedPlayer[]>(() =>
     loadCachedPlayers()
   );
@@ -89,13 +92,15 @@ export default function AdminVoluntarios() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'todos' | RegistrationStatus>('todos');
-
-  const [adminPhone, setAdminPhone] = useState('');
-  const [adminPhoneError, setAdminPhoneError] = useState<string | null>(null);
-  const [adminSavedFeedback, setAdminSavedFeedback] = useState(false);
+  const [isQrOpen, setIsQrOpen] = useState(false);
 
   const isFetchingRef = useRef(false);
   const retryTimeoutRef = useRef<number | null>(null);
+
+  const handleLogout = () => {
+    sessionStorage.removeItem(ADMIN_AUTH_KEY);
+    navigate('/admin/login', { replace: true });
+  };
 
   const fetchPlayers = useCallback(
     async (options?: { silent?: boolean; retryCount?: number }) => {
@@ -120,7 +125,6 @@ export default function AdminVoluntarios() {
       );
 
       try {
-        // Select leve apenas com os campos necessários (poupa dados em rede lenta)
         const { data, error } = await supabase
           .from('mk_registrations')
           .select('id, full_name, name, phone, status, created_at')
@@ -146,7 +150,6 @@ export default function AdminVoluntarios() {
           setPlayers(normalized);
           setFetchError(null);
 
-          // Guardar cache local
           try {
             localStorage.setItem(CACHE_PLAYERS_KEY, JSON.stringify(normalized));
             const nowStr = new Date().toLocaleTimeString('pt-PT', {
@@ -157,11 +160,9 @@ export default function AdminVoluntarios() {
             setLastSync(nowStr);
             localStorage.setItem(LAST_SYNC_KEY, nowStr);
           } catch {
-            // Ignorar erro de quota
+            // Ignorar
           }
 
-          // Na primeira abertura neste dispositivo, regista os atuais como já vistos
-          // para que apenas os que entrarem depois apareçam como NOVO
           if (!hasInitializedSeen) {
             const initialSet = new Set(normalized.map((p) => p.id));
             setSeenIds(initialSet);
@@ -172,7 +173,6 @@ export default function AdminVoluntarios() {
       } catch (err: any) {
         window.clearTimeout(timeoutId);
         const isAbort = err?.name === 'AbortError';
-        console.warn('Falha na sincronização:', err);
 
         setFetchError(
           isAbort
@@ -180,7 +180,6 @@ export default function AdminVoluntarios() {
             : 'Sem ligação estável ao servidor. A mostrar cache local.'
         );
 
-        // Até 2 tentativas automáticas com atraso progressivo
         if (retryCount < 2) {
           const delay = (retryCount + 1) * 3000;
           retryTimeoutRef.current = window.setTimeout(() => {
@@ -196,7 +195,6 @@ export default function AdminVoluntarios() {
     [hasInitializedSeen, players.length]
   );
 
-  // Marcar um jogador específico como visto
   const markAsSeen = useCallback((id: string) => {
     setSeenIds((prev) => {
       if (prev.has(id)) return prev;
@@ -207,7 +205,6 @@ export default function AdminVoluntarios() {
     });
   }, []);
 
-  // Marcar todos os atuais como vistos
   const markAllAsSeen = useCallback(() => {
     const next = new Set(seenIds);
     players.forEach((p) => next.add(p.id));
@@ -216,14 +213,8 @@ export default function AdminVoluntarios() {
   }, [players, seenIds]);
 
   useEffect(() => {
-    const savedAdminPhone = localStorage.getItem(ADMIN_PHONE_KEY);
-    if (savedAdminPhone) {
-      setAdminPhone(savedAdminPhone);
-    }
-
     fetchPlayers({ silent: players.length > 0 });
 
-    // Monitorizar estado da internet
     const handleOnline = () => {
       setIsOnline(true);
       fetchPlayers({ silent: true });
@@ -232,7 +223,6 @@ export default function AdminVoluntarios() {
       setIsOnline(false);
     };
 
-    // Atualizar quando o admin volta para o separador/app
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchPlayers({ silent: true });
@@ -243,14 +233,12 @@ export default function AdminVoluntarios() {
     window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleVisibility);
 
-    // Polling suave de segurança (caso WebSocket caia em rede móvel fraca)
     const pollId = window.setInterval(() => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         fetchPlayers({ silent: true });
       }
     }, POLL_INTERVAL_MS);
 
-    // Realtime do Supabase (atualização imediata quando a rede permite)
     const channel = supabase
       .channel('mk_registrations_admin_live')
       .on(
@@ -272,22 +260,9 @@ export default function AdminVoluntarios() {
     };
   }, [fetchPlayers, players.length]);
 
-  const handleAdminPhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 9);
-    setAdminPhone(digitsOnly);
-    localStorage.setItem(ADMIN_PHONE_KEY, digitsOnly);
-
-    if (digitsOnly.length === 9) {
-      setAdminPhoneError(null);
-      setAdminSavedFeedback(true);
-      setTimeout(() => setAdminSavedFeedback(false), 2500);
-    }
-  };
-
-  const sendWhatsAppNotification = (
+  const openWhatsAppApp = (
     player: ExtendedPlayer,
-    status: 'confirmado' | 'recusado',
-    validAdminDigits: string
+    status: 'confirmado' | 'recusado'
   ) => {
     const cleanCandidateDigits = player.phone.replace(/\D/g, '');
     const waTargetNumber = cleanCandidateDigits.startsWith('258')
@@ -296,27 +271,20 @@ export default function AdminVoluntarios() {
 
     const message =
       status === 'confirmado'
-        ? `Olá *${player.full_name}*! 🔥\n\nA tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *CONFIRMADA*! 🏆\n\nEm breve enviaremos a tabela de combates e os horários.\nQualquer dúvida, fala diretamente com a organização pelo número: *+258 ${validAdminDigits}*.`
-        : `Olá *${player.full_name}*.\n\nInformamos que, infelizmente, a tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *RECUSADA* nesta edição (vagas esgotadas ou dados incompletos).\n\nPara mais informações, contacta a administração pelo número: *+258 ${validAdminDigits}*.`;
+        ? `Olá *${player.full_name}*! 🔥\n\nA tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *CONFIRMADA*! 🏆\n\nEm breve enviaremos a tabela de combates e os horários. Prepara-te para a arena!`
+        : `Olá *${player.full_name}*.\n\nInformamos que, infelizmente, a tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *RECUSADA* nesta edição (vagas esgotadas ou dados incompletos).\n\nObrigado pelo interesse em participar!`;
 
-    const whatsappUrl = `https://wa.me/${waTargetNumber}?text=${encodeURIComponent(
+    const nativeWhatsappUri = `whatsapp://send?phone=${waTargetNumber}&text=${encodeURIComponent(
       message
     )}`;
 
-    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    window.location.href = nativeWhatsappUri;
   };
 
   const handleDecision = async (
     player: ExtendedPlayer,
     newStatus: 'confirmado' | 'recusado'
   ) => {
-    if (adminPhone.length !== 9) {
-      setAdminPhoneError(
-        'Insere primeiro o teu número de WhatsApp (9 dígitos) acima antes de confirmar ou recusar.'
-      );
-      return;
-    }
-
     if (!isOnline) {
       setFetchError(
         'Estás sem internet. Liga a rede para confirmar ou recusar este jogador.'
@@ -324,11 +292,9 @@ export default function AdminVoluntarios() {
       return;
     }
 
-    setAdminPhoneError(null);
     setActionLoadingId(player.id);
     markAsSeen(player.id);
 
-    // Atualização otimista na interface para resposta imediata
     const previousPlayers = [...players];
     const optimisticPlayers = players.map((p) =>
       p.id === player.id ? { ...p, status: newStatus } : p
@@ -344,7 +310,6 @@ export default function AdminVoluntarios() {
     setActionLoadingId(null);
 
     if (error) {
-      // Reverte se falhar no servidor
       setPlayers(previousPlayers);
       localStorage.setItem(CACHE_PLAYERS_KEY, JSON.stringify(previousPlayers));
       setFetchError(
@@ -353,7 +318,7 @@ export default function AdminVoluntarios() {
       return;
     }
 
-    sendWhatsAppNotification(player, newStatus, adminPhone);
+    openWhatsAppApp(player, newStatus);
   };
 
   const deletePlayer = async (id: string) => {
@@ -393,7 +358,7 @@ export default function AdminVoluntarios() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col justify-between">
       <div>
-        <header className="border-b border-zinc-800 bg-zinc-950 sticky top-0 z-20">
+        <header className="border-b border-zinc-800 bg-zinc-950">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <DragonEmblem className="w-7 h-7 min-w-[28px] min-h-[28px]" />
@@ -413,22 +378,33 @@ export default function AdminVoluntarios() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setIsQrOpen(true)}
+                title="Mostrar Código QR de inscrição"
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-2 rounded-xl border border-emerald-500/30 cursor-pointer"
+              >
+                <QrCode className="w-4 h-4" />
+                <span>QR Code</span>
+              </button>
+
               <button
                 onClick={() => fetchPlayers({ silent: false })}
                 disabled={isSyncing || !isOnline}
                 title="Atualizar lista agora"
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-200 bg-zinc-900 hover:bg-zinc-800 active:scale-[0.98] px-3 py-2 rounded-xl border border-zinc-800 transition-transform duration-150 cursor-pointer disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-200 bg-zinc-900 hover:bg-zinc-800 px-3 py-2 rounded-xl border border-zinc-800 cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw
-                  className={`w-4 h-4 ${isSyncing ? 'animate-spin text-amber-400' : ''}`}
+                  className={`w-4 h-4 ${isSyncing ? 'text-amber-400' : ''}`}
                 />
-                <span className="hidden sm:inline">Atualizar</span>
+                <span className="hidden sm:inline">
+                  {isSyncing ? 'A sincronizar...' : 'Atualizar'}
+                </span>
               </button>
 
               <Link
                 to="/admin/mapa"
-                className="inline-flex items-center gap-2 text-xs font-bold text-amber-400 bg-zinc-900 hover:bg-zinc-800 active:scale-[0.98] px-3.5 py-2 rounded-xl border border-amber-500/40 transition-transform duration-150"
+                className="inline-flex items-center gap-2 text-xs font-bold text-amber-400 bg-zinc-900 hover:bg-zinc-800 px-3.5 py-2 rounded-xl border border-amber-500/40"
               >
                 <GitFork className="w-4 h-4" />
                 <span>Mapa / Sorteio</span>
@@ -436,18 +412,26 @@ export default function AdminVoluntarios() {
 
               <Link
                 to="/"
-                className="inline-flex items-center gap-2 text-xs font-bold text-zinc-950 bg-amber-500 hover:bg-amber-400 active:scale-[0.98] px-3.5 py-2 rounded-xl transition-transform duration-150"
+                className="inline-flex items-center gap-2 text-xs font-bold text-zinc-950 bg-amber-500 hover:bg-amber-400 px-3.5 py-2 rounded-xl"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span className="hidden sm:inline">Voltar ao Formulário</span>
                 <span className="sm:hidden">Formulário</span>
               </Link>
+
+              <button
+                onClick={handleLogout}
+                title="Terminar sessão do administrador"
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 px-3 py-2 rounded-xl border border-red-500/30 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sair</span>
+              </button>
             </div>
           </div>
         </header>
 
         <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-5">
-          {/* Banner de estado Offline / Rede Fraca */}
           {!isOnline && (
             <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center gap-2.5">
               <WifiOff className="w-4 h-4 shrink-0 text-amber-400" />
@@ -474,7 +458,6 @@ export default function AdminVoluntarios() {
             </div>
           )}
 
-          {/* Banner de Novas Inscrições Detetadas */}
           {newPlayersCount > 0 && (
             <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 text-xs sm:text-sm text-amber-200 font-semibold">
@@ -487,7 +470,7 @@ export default function AdminVoluntarios() {
               </div>
               <button
                 onClick={markAllAsSeen}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-extrabold transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-extrabold cursor-pointer"
               >
                 <CheckCheck className="w-3.5 h-3.5" />
                 <span>Marcar todos como vistos</span>
@@ -495,64 +478,6 @@ export default function AdminVoluntarios() {
             </div>
           )}
 
-          {/* Card WhatsApp Admin */}
-          <div className="bg-zinc-900 border border-amber-500/30 rounded-2xl p-5 sm:p-6 shadow-lg space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="space-y-1">
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
-                  <MessageCircle className="w-5 h-5 text-emerald-400" />
-                  Número de WhatsApp do Administrador
-                </h2>
-                <p className="text-xs text-zinc-400">
-                  Preenche o teu contacto (9 dígitos). Ele será incluído na
-                  mensagem enviada ao candidato quando clicares em Confirmar ou
-                  Recusar.
-                </p>
-              </div>
-
-              <div className="w-full sm:w-72 shrink-0">
-                <div className="relative flex items-center">
-                  <span className="absolute left-3.5 text-xs font-bold text-amber-400 select-none border-r border-zinc-800 pr-2.5">
-                    +258
-                  </span>
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    maxLength={9}
-                    value={adminPhone}
-                    onChange={handleAdminPhoneChange}
-                    placeholder="840000000"
-                    className={`w-full rounded-xl bg-zinc-950 border pl-16 pr-14 py-2.5 text-sm text-white font-mono tracking-widest placeholder-zinc-600 focus:outline-none transition-colors duration-150 ${
-                      adminPhoneError
-                        ? 'border-red-500'
-                        : adminPhone.length === 9
-                        ? 'border-emerald-500/60'
-                        : 'border-zinc-800 focus:border-amber-500'
-                    }`}
-                  />
-                  <span className="absolute right-3 text-[11px] font-mono text-zinc-500">
-                    {adminPhone.length}/9
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {adminPhoneError && (
-              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-400 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{adminPhoneError}</span>
-              </div>
-            )}
-
-            {adminSavedFeedback && !adminPhoneError && (
-              <div className="text-xs text-emerald-400 flex items-center gap-1.5">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Número do administrador guardado com sucesso!</span>
-              </div>
-            )}
-          </div>
-
-          {/* Cabeçalho da Lista + Filtros */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
             <div>
               <h1 className="text-2xl font-extrabold text-white flex items-center gap-2">
@@ -576,7 +501,7 @@ export default function AdminVoluntarios() {
                   <button
                     key={status}
                     onClick={() => setFilter(status)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors duration-150 cursor-pointer ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize cursor-pointer ${
                       filter === status
                         ? 'bg-amber-500 text-zinc-950 font-bold'
                         : 'text-zinc-400 hover:text-white'
@@ -589,24 +514,23 @@ export default function AdminVoluntarios() {
             </div>
           </div>
 
-          {/* Conteúdo da Lista */}
           {initialLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[1, 2, 3, 4].map((n) => (
                 <div
                   key={n}
-                  className="h-36 rounded-2xl bg-zinc-900/70 border border-zinc-800 animate-pulse"
+                  className="h-36 rounded-2xl bg-zinc-900 border border-zinc-800"
                 />
               ))}
             </div>
           ) : filteredList.length === 0 ? (
-            <div className="text-center py-14 bg-zinc-900/60 border border-zinc-800 rounded-2xl space-y-4">
+            <div className="text-center py-14 bg-zinc-900 border border-zinc-800 rounded-2xl space-y-4">
               <p className="text-zinc-400 text-sm">
                 Nenhum jogador encontrado neste filtro.
               </p>
               <Link
                 to="/"
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-400 text-xs font-bold border border-zinc-700 transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-400 text-xs font-bold border border-zinc-700"
               >
                 <UserPlus className="w-4 h-4" />
                 <span>Ir para o Formulário de Inscrição</span>
@@ -624,9 +548,9 @@ export default function AdminVoluntarios() {
                     onClick={() => {
                       if (isNew) markAsSeen(player.id);
                     }}
-                    className={`bg-zinc-900 rounded-2xl p-5 flex flex-col justify-between gap-4 shadow-md transition-colors ${
+                    className={`bg-zinc-900 rounded-2xl p-5 flex flex-col justify-between gap-4 card-lite ${
                       isNew
-                        ? 'border-2 border-amber-500/80 ring-1 ring-amber-500/20'
+                        ? 'border-2 border-amber-500/80'
                         : 'border border-zinc-800'
                     }`}
                   >
@@ -680,7 +604,7 @@ export default function AdminVoluntarios() {
                           }}
                           disabled={isBusy}
                           title="Eliminar registo"
-                          className="p-1.5 text-zinc-500 hover:text-red-400 transition-colors cursor-pointer disabled:opacity-50"
+                          className="p-1.5 text-zinc-500 hover:text-red-400 cursor-pointer disabled:opacity-50"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -707,7 +631,7 @@ export default function AdminVoluntarios() {
                             handleDecision(player, 'confirmado');
                           }}
                           disabled={isBusy}
-                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 active:scale-[0.98] text-emerald-400 text-xs font-bold transition-transform duration-150 cursor-pointer border border-emerald-500/20 disabled:opacity-50"
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 text-xs font-bold cursor-pointer border border-emerald-500/20 disabled:opacity-50"
                         >
                           <Check className="w-4 h-4" />
                           <span>Confirmar + WhatsApp</span>
@@ -718,7 +642,7 @@ export default function AdminVoluntarios() {
                             handleDecision(player, 'recusado');
                           }}
                           disabled={isBusy}
-                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-red-600/20 hover:bg-red-600/30 active:scale-[0.98] text-red-400 text-xs font-bold transition-transform duration-150 cursor-pointer border border-red-500/20 disabled:opacity-50"
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs font-bold cursor-pointer border border-red-500/20 disabled:opacity-50"
                         >
                           <X className="w-4 h-4" />
                           <span>Recusar + WhatsApp</span>
@@ -736,12 +660,18 @@ export default function AdminVoluntarios() {
       <footer className="border-t border-zinc-900 py-5 px-4 text-center">
         <Link
           to="/"
-          className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-amber-400 transition-colors"
+          className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-amber-400"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
           <span>Regressar à página de inscrição de lutadores</span>
         </Link>
       </footer>
+
+      {/* Modal do Código QR */}
+      <RegistrationQrModal
+        isOpen={isQrOpen}
+        onClose={() => setIsQrOpen(false)}
+      />
     </div>
   );
 }

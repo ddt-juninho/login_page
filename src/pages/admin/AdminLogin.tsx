@@ -13,15 +13,41 @@ import {
 import DragonEmblem from '../../components/DragonEmblem';
 import { ADMIN_AUTH_KEY } from '../../components/ProtectedAdminRoute';
 
-const VALID_ADMIN_USER = 'Snyy';
-const VALID_ADMIN_PASS = 'esumanjo';
+const ADMIN_CREDENTIALS_STORAGE_KEY = 'mk_tournament_admin_credentials_v1';
+const DEFAULT_ADMIN_EMAIL = 'Snyy';
+const DEFAULT_ADMIN_CODE = 'esumanjo';
+
+function getStoredAdminCredentials(): { email: string; password: string } {
+  try {
+    const raw = localStorage.getItem(ADMIN_CREDENTIALS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.email && parsed?.password) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Fallback
+  }
+
+  const defaults = { email: DEFAULT_ADMIN_EMAIL, password: DEFAULT_ADMIN_CODE };
+  try {
+    localStorage.setItem(
+      ADMIN_CREDENTIALS_STORAGE_KEY,
+      JSON.stringify(defaults)
+    );
+  } catch {
+    // Ignorar
+  }
+  return defaults;
+}
 
 export default function AdminLogin() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [emailOrUser, setEmailOrUser] = useState('');
-  const [password, setPassword] = useState('');
+  const [emailInput, setEmailInput] = useState('');
+  const [codeInput, setCodeInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,57 +55,49 @@ export default function AdminLogin() {
     (location.state as { from?: string } | null)?.from || '/admin/voluntarios';
 
   useEffect(() => {
-    if (sessionStorage.getItem(ADMIN_AUTH_KEY) === 'true') {
-      navigate(redirectTo, { replace: true });
-    }
-  }, [navigate, redirectTo]);
+    getStoredAdminCredentials();
+  }, []);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
+    const stored = getStoredAdminCredentials();
+
     if (
-      emailOrUser.trim() === VALID_ADMIN_USER &&
-      password === VALID_ADMIN_PASS
+      emailInput.trim() === stored.email &&
+      codeInput === stored.password
     ) {
       sessionStorage.setItem(ADMIN_AUTH_KEY, 'true');
       navigate(redirectTo, { replace: true });
     } else {
-      setError('Credenciais inválidas. Verifica o utilizador e a palavra-passe.');
+      setError('Email ou código incorreto. Confirma os dados do administrador.');
     }
   };
 
   return (
-    <div className="relative min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4 overflow-hidden paint-contain">
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(circle at 50% 20%, rgba(245, 158, 11, 0.16) 0%, rgba(9, 9, 11, 0) 65%)',
-        }}
-      />
-
-      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 sm:p-8 space-y-6">
         <div className="text-center space-y-3">
-          <div className="mx-auto w-16 h-16 rounded-2xl bg-zinc-950 border border-amber-500/30 flex items-center justify-center">
-            <DragonEmblem className="w-11 h-11" />
+          <div className="mx-auto w-14 h-14 rounded-2xl bg-zinc-950 border border-amber-500/30 flex items-center justify-center">
+            <DragonEmblem className="w-10 h-10" />
           </div>
 
           <div className="space-y-1">
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[11px] font-bold uppercase tracking-widest">
               <ShieldCheck className="w-3.5 h-3.5" />
-              Acesso Restrito
+              Confirmação Obrigatória
             </span>
             <h1 className="text-2xl font-black text-white uppercase tracking-tight">
               Área do Administrador
             </h1>
             <p className="text-xs text-zinc-400">
-              Confirma as tuas credenciais para gerir inscrições e o mapa do torneio.
+              Insere o teu email e o código de acesso para entrar no painel.
             </p>
           </div>
         </div>
 
-        <form onSubmit={handleLogin} className="space-y-4">
+        <form onSubmit={handleLogin} autoComplete="off" className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
               Email / Utilizador
@@ -88,36 +106,36 @@ export default function AdminLogin() {
               <User className="w-4 h-4 text-amber-400 absolute left-3.5 pointer-events-none" />
               <input
                 type="text"
-                value={emailOrUser}
+                value={emailInput}
                 onChange={(e) => {
-                  setEmailOrUser(e.target.value);
+                  setEmailInput(e.target.value);
                   if (error) setError(null);
                 }}
-                placeholder="Insere o utilizador"
-                autoComplete="username"
+                placeholder="Insere o email do admin"
+                autoComplete="off"
                 required
-                className="w-full rounded-xl bg-zinc-950 border border-zinc-800 focus:border-amber-500 pl-10 pr-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none transition-colors duration-150"
+                className="w-full rounded-xl bg-zinc-950 border border-zinc-800 focus:border-amber-500 pl-10 pr-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none"
               />
             </div>
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
-              Palavra-passe
+              Código de Acesso
             </label>
             <div className="relative flex items-center">
               <Lock className="w-4 h-4 text-amber-400 absolute left-3.5 pointer-events-none" />
               <input
                 type={showPassword ? 'text' : 'password'}
-                value={password}
+                value={codeInput}
                 onChange={(e) => {
-                  setPassword(e.target.value);
+                  setCodeInput(e.target.value);
                   if (error) setError(null);
                 }}
-                placeholder="••••••••"
-                autoComplete="current-password"
+                placeholder="Insere o código"
+                autoComplete="new-password"
                 required
-                className="w-full rounded-xl bg-zinc-950 border border-zinc-800 focus:border-amber-500 pl-10 pr-11 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none transition-colors duration-150"
+                className="w-full rounded-xl bg-zinc-950 border border-zinc-800 focus:border-amber-500 pl-10 pr-11 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none"
               />
               <button
                 type="button"
@@ -143,17 +161,17 @@ export default function AdminLogin() {
 
           <button
             type="submit"
-            className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-[0.99] text-zinc-950 font-black uppercase tracking-wider text-xs transition-transform duration-150 cursor-pointer"
+            className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black uppercase tracking-wider text-xs cursor-pointer"
           >
             <LogIn className="w-4 h-4" />
-            <span>Entrar no Painel</span>
+            <span>Confirmar e Entrar</span>
           </button>
         </form>
 
-        <div className="pt-2 border-t border-zinc-800/80 text-center">
+        <div className="pt-2 border-t border-zinc-800 text-center">
           <Link
             to="/"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-400 hover:text-amber-400 transition-colors"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-400 hover:text-amber-400"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Voltar à página de inscrição</span>
