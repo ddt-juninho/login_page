@@ -1,31 +1,19 @@
-import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Voluntariado from './pages/Voluntariado';
 import AdminVoluntarios from './pages/admin/AdminVoluntarios';
-import LoadingScreen from './components/LoadingScreen';
+import TournamentBracket from './pages/admin/TournamentBracket';
 
-export default function App() {
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsInitialLoading(false);
-    }, 1800);
-
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (isInitialLoading) {
-    return <LoadingScreen message="A preparar plataforma de voluntariado..." />;
-  }
-
+export function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Voluntariado />} />
         <Route path="/voluntariado" element={<Voluntariado />} />
         <Route path="/admin/voluntarios" element={<AdminVoluntarios />} />
+        <Route path="/admin/mapa" element={<TournamentBracket />} />
       </Routes>
     </BrowserRouter>
   );
 }
+
+export default App;

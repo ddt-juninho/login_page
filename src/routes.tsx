@@ -15,4 +15,8 @@ export const router = createBrowserRouter([
     path: '/admin/voluntarios',
     element: <AdminVoluntarios />,
   },
+  {
+    path: "/admin/mapa", 
+    element: <TournamentBracket />,
+  },
 ]);

@@ -1,1 +1,38 @@
 @import "tailwindcss";
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: #09090b;
+    color: #f4f4f5;
+    text-rendering: optimizeSpeed;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Aceleração de hardware e isolamento de pintura para telemóveis fracos */
+.gpu-layer {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  will-change: transform;
+}
+
+.paint-contain {
+  contain: layout paint;
+}
+
+/* Pausa automaticamente todas as animações quando o telemóvel está em Modo Poupança de Bateria */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
