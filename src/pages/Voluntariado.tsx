@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   User,
@@ -15,11 +15,12 @@ import {
   Users,
   ShieldCheck,
 } from 'lucide-react';
-import type { PlayerRegistration } from '../types/volunteer';
 import LoadingScreen from '../components/LoadingScreen';
 import DragonEmblem from '../components/DragonEmblem';
-
-const STORAGE_KEY = 'mk_tournament_registrations';
+import {
+  useRegistrationsCount,
+  useCreateRegistration,
+} from '../hooks/useRegistrations';
 
 interface FormErrors {
   full_name?: string;
@@ -34,17 +35,11 @@ export default function Voluntariado() {
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [touched, setTouched] = useState<{ full_name?: boolean; phone?: boolean }>({});
-  const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [registeredCount, setRegisteredCount] = useState(0);
 
-  useEffect(() => {
-    const existingRaw = localStorage.getItem(STORAGE_KEY);
-    if (existingRaw) {
-      const list: PlayerRegistration[] = JSON.parse(existingRaw);
-      setRegisteredCount(list.length);
-    }
-  }, [submitted]);
+  // Hooks do React Query + Supabase
+  const { data: registeredCount = 0 } = useRegistrationsCount();
+  const createRegistration = useCreateRegistration();
 
   const validateFields = (nameValue: string, phoneValue: string): FormErrors => {
     const newErrors: FormErrors = {};
@@ -104,37 +99,24 @@ export default function Voluntariado() {
       return;
     }
 
-    setLoading(true);
-
-    setTimeout(() => {
-      const existingRaw = localStorage.getItem(STORAGE_KEY);
-      const existingList: PlayerRegistration[] = existingRaw
-        ? JSON.parse(existingRaw)
-        : [];
-
-      const newPlayer: PlayerRegistration = {
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        full_name: formData.full_name.trim(),
-        phone: `+258 ${formData.phone}`,
-        status: 'pendente',
-      };
-
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify([newPlayer, ...existingList])
-      );
-
-      setLoading(false);
-      setSubmitted(true);
-    }, 900);
+    createRegistration.mutate(
+      {
+        full_name: formData.full_name,
+        phone: formData.phone,
+      },
+      {
+        onSuccess: () => {
+          setSubmitted(true);
+        },
+      }
+    );
   };
 
   const isNameValid = formData.full_name.trim().length >= 3;
   const isPhoneValid = /^8[2-7]\d{7}$/.test(formData.phone);
   const progressPercent = (isNameValid ? 50 : 0) + (isPhoneValid ? 50 : 0);
 
-  if (loading) {
+  if (createRegistration.isPending) {
     return <LoadingScreen message="A registar lutador na arena..." />;
   }
 
@@ -189,6 +171,7 @@ export default function Voluntariado() {
               setFormData({ full_name: '', phone: '' });
               setErrors({});
               setTouched({});
+              createRegistration.reset();
             }}
             className="w-full py-3.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl transition text-sm cursor-pointer border border-zinc-700"
           >
@@ -396,6 +379,14 @@ export default function Voluntariado() {
                 </div>
               </div>
 
+              {/* Alerta de Erro da API (ex: número duplicado ou sem internet) */}
+              {createRegistration.isError && (
+                <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/40 text-xs text-red-300 flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{createRegistration.error.message}</span>
+                </div>
+              )}
+
               <div className="space-y-5">
                 {/* Campo Nome */}
                 <div>
@@ -488,8 +479,8 @@ export default function Voluntariado() {
             <div className="pt-2 space-y-3">
               <button
                 type="submit"
-                disabled={loading}
-                className={`group w-full flex items-center justify-center gap-2.5 font-black uppercase tracking-wider py-4 px-6 rounded-xl transition-all duration-300 cursor-pointer ${
+                disabled={createRegistration.isPending}
+                className={`group w-full flex items-center justify-center gap-2.5 font-black uppercase tracking-wider py-4 px-6 rounded-xl transition-all duration-300 cursor-pointer disabled:opacity-50 ${
                   isNameValid && isPhoneValid
                     ? 'bg-gradient-to-r from-amber-400 via-orange-500 to-red-600 hover:brightness-110 text-zinc-950 shadow-[0_0_25px_rgba(245,158,11,0.4)]'
                     : 'bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-lg shadow-amber-500/15'
@@ -510,7 +501,7 @@ export default function Voluntariado() {
 
       {/* Rodapé */}
       <footer className="relative z-10 border-t border-zinc-900 py-4 text-center text-xs text-zinc-600">
-       • Campeonato de Mortal Kombat • 
+        • Campeonato de Mortal Kombat •
       </footer>
     </div>
   );
