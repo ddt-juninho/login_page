@@ -10,7 +10,7 @@ export default function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsInitialLoading(false);
-    }, 1800);
+    }, 1800); // Tempo em milissegundos (1.8s)
 
     return () => clearTimeout(timer);
   }, []);
@@ -25,7 +25,6 @@ export default function App() {
         <Route path="/" element={<Voluntariado />} />
         <Route path="/voluntariado" element={<Voluntariado />} />
         <Route path="/admin/voluntarios" element={<AdminVoluntarios />} />
-        <Route path="/admin/mapa" element={<AdminVoluntarios />} />
       </Routes>
     </BrowserRouter>
   );
