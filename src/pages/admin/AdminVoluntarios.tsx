@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Check,
   X,
@@ -16,7 +16,6 @@ import {
   WifiOff,
   Sparkles,
   CheckCheck,
-  LogOut,
   QrCode,
 } from 'lucide-react';
 import type {
@@ -26,14 +25,13 @@ import type {
 import DragonEmblem from '../../components/DragonEmblem';
 import RegistrationQrModal from '../../components/RegistrationQrModal';
 import { supabase } from '../../lib/supabase';
-import { ADMIN_AUTH_KEY } from '../../components/ProtectedAdminRoute';
 
 const CACHE_PLAYERS_KEY = 'mk_admin_players_cache_v1';
 const SEEN_IDS_KEY = 'mk_admin_seen_ids_v1';
 const LAST_SYNC_KEY = 'mk_admin_last_sync_v1';
 
 const FETCH_TIMEOUT_MS = 8000;
-const POLL_INTERVAL_MS = 30000;
+const POLL_INTERVAL_MS = 25000;
 
 function loadCachedPlayers(): PlayerRegistration[] {
   try {
@@ -63,8 +61,7 @@ function saveSeenIds(ids: Set<string>) {
 }
 
 export default function AdminVoluntarios() {
-  const navigate = useNavigate();
-
+  // Inicia logo com cache local para carregamento instantâneo em internet fraca
   const [players, setPlayers] = useState<PlayerRegistration[]>(() =>
     loadCachedPlayers()
   );
@@ -93,11 +90,6 @@ export default function AdminVoluntarios() {
   const isFetchingRef = useRef(false);
   const retryTimeoutRef = useRef<number | null>(null);
 
-  const handleLogout = () => {
-    sessionStorage.removeItem(ADMIN_AUTH_KEY);
-    navigate('/admin/login', { replace: true });
-  };
-
   const fetchPlayers = useCallback(
     async (options?: { silent?: boolean; retryCount?: number }) => {
       const silent = options?.silent ?? false;
@@ -121,6 +113,7 @@ export default function AdminVoluntarios() {
       );
 
       try {
+        // Select leve apenas com os campos necessários (poupa dados em rede lenta)
         const { data, error } = await supabase
           .from('mk_registrations')
           .select('id, full_name, name, phone, status, created_at')
@@ -146,6 +139,7 @@ export default function AdminVoluntarios() {
           setPlayers(normalized);
           setFetchError(null);
 
+          // Guardar cache local
           try {
             localStorage.setItem(CACHE_PLAYERS_KEY, JSON.stringify(normalized));
             const nowStr = new Date().toLocaleTimeString('pt-PT', {
@@ -159,6 +153,8 @@ export default function AdminVoluntarios() {
             // Ignorar erro de quota
           }
 
+          // Na primeira abertura neste dispositivo, regista os atuais como já vistos
+          // para que apenas os que entrarem depois apareçam como NOVO
           if (!hasInitializedSeen) {
             const initialSet = new Set(normalized.map((p) => p.id));
             setSeenIds(initialSet);
@@ -169,6 +165,7 @@ export default function AdminVoluntarios() {
       } catch (err: any) {
         window.clearTimeout(timeoutId);
         const isAbort = err?.name === 'AbortError';
+        console.warn('Falha na sincronização:', err);
 
         setFetchError(
           isAbort
@@ -176,6 +173,7 @@ export default function AdminVoluntarios() {
             : 'Sem ligação estável ao servidor. A mostrar cache local.'
         );
 
+        // Até 2 tentativas automáticas com atraso progressivo
         if (retryCount < 2) {
           const delay = (retryCount + 1) * 3000;
           retryTimeoutRef.current = window.setTimeout(() => {
@@ -191,6 +189,7 @@ export default function AdminVoluntarios() {
     [hasInitializedSeen, players.length]
   );
 
+  // Marcar um jogador específico como visto
   const markAsSeen = useCallback((id: string) => {
     setSeenIds((prev) => {
       if (prev.has(id)) return prev;
@@ -201,6 +200,7 @@ export default function AdminVoluntarios() {
     });
   }, []);
 
+  // Marcar todos os atuais como vistos
   const markAllAsSeen = useCallback(() => {
     const next = new Set(seenIds);
     players.forEach((p) => next.add(p.id));
@@ -211,6 +211,7 @@ export default function AdminVoluntarios() {
   useEffect(() => {
     fetchPlayers({ silent: players.length > 0 });
 
+    // Monitorizar estado da internet
     const handleOnline = () => {
       setIsOnline(true);
       fetchPlayers({ silent: true });
@@ -219,6 +220,7 @@ export default function AdminVoluntarios() {
       setIsOnline(false);
     };
 
+    // Atualizar quando o admin volta para o separador/app
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
         fetchPlayers({ silent: true });
@@ -229,12 +231,14 @@ export default function AdminVoluntarios() {
     window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleVisibility);
 
+    // Polling suave de segurança (caso WebSocket caia em rede móvel fraca)
     const pollId = window.setInterval(() => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         fetchPlayers({ silent: true });
       }
     }, POLL_INTERVAL_MS);
 
+    // Realtime do Supabase (atualização imediata quando a rede permite)
     const channel = supabase
       .channel('mk_registrations_admin_live')
       .on(
@@ -270,6 +274,7 @@ export default function AdminVoluntarios() {
         ? `Olá *${player.full_name}*! 🔥\n\nA tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *CONFIRMADA*! 🏆\n\nEm breve enviaremos a tabela de combates e os horários. Prepara-te para a arena!`
         : `Olá *${player.full_name}*.\n\nInformamos que, infelizmente, a tua inscrição no *Campeonato de Mortal Kombat (UniTiva)* foi *RECUSADA* nesta edição (vagas esgotadas ou dados incompletos).\n\nObrigado pelo interesse em participar!`;
 
+    // Esquema nativo whatsapp:// para abrir diretamente a aplicação no iPhone (iOS) e Android
     const nativeWhatsappUri = `whatsapp://send?phone=${waTargetNumber}&text=${encodeURIComponent(
       message
     )}`;
@@ -291,6 +296,7 @@ export default function AdminVoluntarios() {
     setActionLoadingId(player.id);
     markAsSeen(player.id);
 
+    // Atualização otimista na interface para resposta imediata
     const previousPlayers = [...players];
     const optimisticPlayers = players.map((p) =>
       p.id === player.id ? { ...p, status: newStatus } : p
@@ -306,6 +312,7 @@ export default function AdminVoluntarios() {
     setActionLoadingId(null);
 
     if (error) {
+      // Reverte se falhar no servidor
       setPlayers(previousPlayers);
       localStorage.setItem(CACHE_PLAYERS_KEY, JSON.stringify(previousPlayers));
       setFetchError(
@@ -377,7 +384,7 @@ export default function AdminVoluntarios() {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setIsQrOpen(true)}
-                title="Mostrar Código QR de inscrição"
+                title="Abrir Código QR Oficial"
                 className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 px-3 py-2 rounded-xl border border-emerald-500/30 cursor-pointer"
               >
                 <QrCode className="w-4 h-4" />
@@ -414,20 +421,12 @@ export default function AdminVoluntarios() {
                 <span className="hidden sm:inline">Voltar ao Formulário</span>
                 <span className="sm:hidden">Formulário</span>
               </Link>
-
-              <button
-                onClick={handleLogout}
-                title="Terminar sessão do administrador"
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 px-3 py-2 rounded-xl border border-red-500/30 cursor-pointer"
-              >
-                <LogOut className="w-4 h-4" />
-                <span>Sair</span>
-              </button>
             </div>
           </div>
         </header>
 
         <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-5">
+          {/* Banner de estado Offline / Rede Fraca */}
           {!isOnline && (
             <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center gap-2.5">
               <WifiOff className="w-4 h-4 shrink-0 text-amber-400" />
@@ -454,6 +453,7 @@ export default function AdminVoluntarios() {
             </div>
           )}
 
+          {/* Banner de Novas Inscrições Detetadas */}
           {newPlayersCount > 0 && (
             <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 text-xs sm:text-sm text-amber-200 font-semibold">
@@ -474,6 +474,7 @@ export default function AdminVoluntarios() {
             </div>
           )}
 
+          {/* Cabeçalho da Lista + Filtros */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
             <div>
               <h1 className="text-2xl font-extrabold text-white flex items-center gap-2">
@@ -510,6 +511,7 @@ export default function AdminVoluntarios() {
             </div>
           </div>
 
+          {/* Conteúdo da Lista */}
           {initialLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[1, 2, 3, 4].map((n) => (
@@ -663,6 +665,7 @@ export default function AdminVoluntarios() {
         </Link>
       </footer>
 
+      {/* Modal do Código QR Oficial */}
       <RegistrationQrModal
         isOpen={isQrOpen}
         onClose={() => setIsQrOpen(false)}

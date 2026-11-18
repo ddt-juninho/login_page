@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   User,
@@ -14,13 +14,14 @@ import {
   Sparkles,
   Users,
   ShieldCheck,
+  ArrowDown,
 } from 'lucide-react';
-import type { PlayerRegistration } from '../types/volunteer';
 import LoadingScreen from '../components/LoadingScreen';
 import DragonEmblem from '../components/DragonEmblem';
-import { ADMIN_AUTH_KEY } from '../components/ProtectedAdminRoute';
-
-const STORAGE_KEY = 'mk_tournament_registrations';
+import {
+  useRegistrationsCount,
+  useCreateRegistration,
+} from '../hooks/useRegistrations';
 
 interface FormErrors {
   full_name?: string;
@@ -35,17 +36,34 @@ export default function Voluntariado() {
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [touched, setTouched] = useState<{ full_name?: boolean; phone?: boolean }>({});
-  const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [registeredCount, setRegisteredCount] = useState(0);
+  const [showScrollButton, setShowScrollButton] = useState(true);
 
+  const formRef = useRef<HTMLFormElement | null>(null);
+
+  // Hooks do React Query + Supabase
+  const { data: registeredCount = 0 } = useRegistrationsCount();
+  const createRegistration = useCreateRegistration();
+
+  // Observa se o formulário já está visível no ecrã mobile (zero gasto de CPU no scroll)
   useEffect(() => {
-    const existingRaw = localStorage.getItem(STORAGE_KEY);
-    if (existingRaw) {
-      const list: PlayerRegistration[] = JSON.parse(existingRaw);
-      setRegisteredCount(list.length);
-    }
+    const formEl = formRef.current;
+    if (!formEl || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowScrollButton(!entry.isIntersecting);
+      },
+      { threshold: 0.25 }
+    );
+
+    observer.observe(formEl);
+    return () => observer.disconnect();
   }, [submitted]);
+
+  const scrollToForm = () => {
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const validateFields = (nameValue: string, phoneValue: string): FormErrors => {
     const newErrors: FormErrors = {};
@@ -105,38 +123,25 @@ export default function Voluntariado() {
       return;
     }
 
-    setLoading(true);
-
-    setTimeout(() => {
-      const existingRaw = localStorage.getItem(STORAGE_KEY);
-      const existingList: PlayerRegistration[] = existingRaw
-        ? JSON.parse(existingRaw)
-        : [];
-
-      const newPlayer: PlayerRegistration = {
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        full_name: formData.full_name.trim(),
-        phone: `+258 ${formData.phone}`,
-        status: 'pendente',
-      };
-
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify([newPlayer, ...existingList])
-      );
-
-      setLoading(false);
-      setSubmitted(true);
-    }, 300);
+    createRegistration.mutate(
+      {
+        full_name: formData.full_name,
+        phone: formData.phone,
+      },
+      {
+        onSuccess: () => {
+          setSubmitted(true);
+        },
+      }
+    );
   };
 
   const isNameValid = formData.full_name.trim().length >= 3;
   const isPhoneValid = /^8[2-7]\d{7}$/.test(formData.phone);
   const progressPercent = (isNameValid ? 50 : 0) + (isPhoneValid ? 50 : 0);
 
-  if (loading) {
-    return <LoadingScreen message="A registar lutador..." />;
+  if (createRegistration.isPending) {
+    return <LoadingScreen message="A registar lutador na arena..." />;
   }
 
   if (submitted) {
@@ -145,7 +150,7 @@ export default function Voluntariado() {
         <div className="max-w-md w-full bg-zinc-900 border border-amber-500/40 rounded-3xl p-7 text-center space-y-5">
           <div className="relative mx-auto w-20 h-20 flex items-center justify-center">
             <div className="absolute inset-0 rounded-full border-2 border-emerald-500/40" />
-            <DragonEmblem className="w-16 h-16" />
+            <DragonEmblem className="w-16 h-16 min-w-[64px] min-h-[64px]" />
             <div className="absolute -bottom-1 -right-1 bg-emerald-500 text-zinc-950 rounded-full p-1">
               <CheckCircle2 className="w-4 h-4" />
             </div>
@@ -188,6 +193,7 @@ export default function Voluntariado() {
               setFormData({ full_name: '', phone: '' });
               setErrors({});
               setTouched({});
+              createRegistration.reset();
             }}
             className="w-full py-3.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm cursor-pointer border border-zinc-700"
           >
@@ -200,7 +206,7 @@ export default function Voluntariado() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col justify-between">
-      {/* Barra Superior sólida sem camadas fixas pesadas */}
+      {/* Barra Superior */}
       <header className="border-b border-zinc-800 bg-zinc-950">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2.5">
@@ -226,7 +232,7 @@ export default function Voluntariado() {
             <Link
               to="/admin/login"
               onClick={() => {
-                sessionStorage.removeItem(ADMIN_AUTH_KEY);
+                sessionStorage.removeItem('mk_tournament_admin_authenticated');
               }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-amber-500 text-amber-400 hover:text-zinc-950 font-bold border border-amber-500/40"
             >
@@ -239,6 +245,7 @@ export default function Voluntariado() {
 
       {/* Conteúdo Principal */}
       <main className="max-w-5xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-7 sm:py-10 space-y-7 sm:space-y-9">
+        {/* Cabeçalho Hero */}
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/40 text-amber-400 text-xs font-bold uppercase tracking-widest">
             <Flame className="w-3.5 h-3.5 text-red-500" />
@@ -258,8 +265,9 @@ export default function Voluntariado() {
           </p>
         </div>
 
+        {/* Grid Principal: Mensagens da Arena + Formulário */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-          {/* Coluna Esquerda */}
+          {/* Coluna Esquerda: Mensagens e Detalhes do Torneio */}
           <div className="lg:col-span-5 bg-zinc-900 border border-zinc-800 rounded-3xl p-6 flex flex-col justify-between space-y-5 card-lite">
             <div className="space-y-4">
               <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
@@ -308,6 +316,7 @@ export default function Voluntariado() {
               </div>
             </div>
 
+            {/* Mensagem Dinâmica Interativa */}
             <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex items-start gap-3">
               <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div className="leading-relaxed">
@@ -339,11 +348,12 @@ export default function Voluntariado() {
 
           {/* Coluna Direita: Formulário de Inscrição */}
           <form
+            ref={formRef}
             onSubmit={handleSubmit}
             noValidate
-            className="lg:col-span-7 bg-zinc-900 border border-zinc-800 rounded-3xl p-6 sm:p-8 flex flex-col justify-between space-y-6 relative overflow-hidden card-lite"
+            className="lg:col-span-7 bg-zinc-900 border border-zinc-800 rounded-3xl p-6 sm:p-8 flex flex-col justify-between space-y-6 relative overflow-hidden scroll-mt-4 card-lite"
           >
-            {/* Barra de Progresso estática sem transições pesadas */}
+            {/* Barra de Progresso no topo do cartão */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-zinc-800">
               <div
                 className="h-full bg-amber-500"
@@ -352,6 +362,7 @@ export default function Voluntariado() {
             </div>
 
             <div className="space-y-5">
+              {/* Cabeçalho do Formulário */}
               <div className="flex items-center justify-between gap-3 border-b border-zinc-800 pb-4">
                 <div className="min-w-0 flex-1">
                   <h2 className="text-lg sm:text-xl font-extrabold text-white tracking-tight">
@@ -364,6 +375,14 @@ export default function Voluntariado() {
 
                 <DragonEmblem className="w-10 h-10 min-w-[40px] min-h-[40px] shrink-0" />
               </div>
+
+              {/* Alerta de Erro da API */}
+              {createRegistration.isError && (
+                <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/40 text-xs text-red-300 flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{createRegistration.error.message}</span>
+                </div>
+              )}
 
               <div className="space-y-5">
                 {/* Campo Nome */}
@@ -385,7 +404,7 @@ export default function Voluntariado() {
                     value={formData.full_name}
                     onChange={handleNameChange}
                     onBlur={() => handleBlur('full_name')}
-                    placeholder="Ex: Carlos Tembe"
+                    placeholder="Ex: Teu Nome"
                     className={`w-full rounded-xl bg-zinc-950 border px-4 py-3.5 text-sm text-white placeholder-zinc-600 focus:outline-none ${
                       errors.full_name
                         ? 'border-red-500'
@@ -402,7 +421,7 @@ export default function Voluntariado() {
                   )}
                 </div>
 
-                {/* Campo Telefone */}
+                {/* Campo Telefone (9 dígitos) */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <label className="text-sm font-semibold text-zinc-200 flex items-center gap-1.5">
@@ -453,11 +472,12 @@ export default function Voluntariado() {
               </div>
             </div>
 
+            {/* Botão de Submissão */}
             <div className="pt-2 space-y-3">
               <button
                 type="submit"
-                disabled={loading}
-                className="w-full flex items-center justify-center gap-2.5 font-black uppercase tracking-wider py-4 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer"
+                disabled={createRegistration.isPending}
+                className="w-full flex items-center justify-center gap-2.5 font-black uppercase tracking-wider py-4 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer disabled:opacity-50"
               >
                 <Send className="w-4 h-4" />
                 <span>Confirmar Registo no Campeonato</span>
@@ -472,8 +492,22 @@ export default function Voluntariado() {
         </div>
       </main>
 
+      {/* Botão flutuante apenas na versão mobile para ir direto ao formulário */}
+      {showScrollButton && (
+        <button
+          type="button"
+          onClick={scrollToForm}
+          aria-label="Ir para o formulário de inscrição"
+          className="lg:hidden fixed bottom-4 right-4 z-30 inline-flex items-center gap-2 px-4 py-3 rounded-full bg-amber-500 active:bg-amber-400 text-zinc-950 font-black uppercase tracking-wider text-xs border border-amber-300 cursor-pointer"
+        >
+          <span>Inscrever-se</span>
+          <ArrowDown className="w-4 h-4" />
+        </button>
+      )}
+
+      {/* Rodapé */}
       <footer className="border-t border-zinc-900 py-4 text-center text-xs text-zinc-600">
-        Campeonato de Mortal Kombat • Organização UniTiva
+        Campeonato de Mortal Kombat • UniTiva
       </footer>
     </div>
   );
