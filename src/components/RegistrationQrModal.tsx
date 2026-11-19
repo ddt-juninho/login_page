@@ -10,7 +10,7 @@ interface RegistrationQrModalProps {
 
 // URL pública global padrão caso o admin abra o painel a partir de localhost
 const FALLBACK_PUBLIC_URL =
-  import.meta.env.VITE_PUBLIC_SITE_URL || 'https://login-page-ddt-juninho.vercel.app';
+  import.meta.env.VITE_PUBLIC_SITE_URL || 'https://loginpage-nu-ivory.vercel.app';
 
 function getInitialGlobalUrl(): string {
   if (typeof window === 'undefined') return `${FALLBACK_PUBLIC_URL}/`;
@@ -259,7 +259,7 @@ export default function RegistrationQrModal({
             className="mx-auto w-fit p-3.5 bg-white rounded-2xl border-4 border-amber-500"
           >
             <QRCodeSVG
-              value={registrationUrl || 'https://vercel.app'}
+              value={registrationUrl || 'https://loginpage-nu-ivory.vercel.app/'}
               size={200}
               bgColor="#ffffff"
               fgColor="#09090b"
