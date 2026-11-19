@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   User,
   Phone,
@@ -15,6 +15,10 @@ import {
   Users,
   ShieldCheck,
   ArrowDown,
+  Clock,
+  XCircle,
+  GitFork,
+  RefreshCw,
 } from 'lucide-react';
 import LoadingScreen from '../components/LoadingScreen';
 import DragonEmblem from '../components/DragonEmblem';
@@ -22,13 +26,38 @@ import {
   useRegistrationsCount,
   useCreateRegistration,
 } from '../hooks/useRegistrations';
+import { supabase } from '../lib/supabase';
+import type { RegistrationStatus } from '../types/volunteer';
+
+const DEVICE_LOCK_KEY = 'mk_device_registered_candidate_v1';
+
+interface DeviceRegistrationRecord {
+  full_name: string;
+  phone: string;
+  status: RegistrationStatus;
+  submitted_at: string;
+}
 
 interface FormErrors {
   full_name?: string;
   phone?: string;
 }
 
+function loadDeviceRegistration(): DeviceRegistrationRecord | null {
+  try {
+    const raw = localStorage.getItem(DEVICE_LOCK_KEY);
+    return raw ? (JSON.parse(raw) as DeviceRegistrationRecord) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function Voluntariado() {
+  const navigate = useNavigate();
+
+  const [deviceRecord, setDeviceRecord] =
+    useState<DeviceRegistrationRecord | null>(() => loadDeviceRegistration());
+
   const [formData, setFormData] = useState({
     full_name: '',
     phone: '',
@@ -36,8 +65,12 @@ export default function Voluntariado() {
 
   const [errors, setErrors] = useState<FormErrors>({});
   const [touched, setTouched] = useState<{ full_name?: boolean; phone?: boolean }>({});
-  const [submitted, setSubmitted] = useState(false);
+  const [duplicatePhoneError, setDuplicatePhoneError] = useState<string | null>(
+    null
+  );
+  const [checkingPhone, setCheckingPhone] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(true);
+  const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
 
   const formRef = useRef<HTMLFormElement | null>(null);
 
@@ -45,8 +78,9 @@ export default function Voluntariado() {
   const { data: registeredCount = 0 } = useRegistrationsCount();
   const createRegistration = useCreateRegistration();
 
-  // Observa se o formulário já está visível no ecrã mobile (zero gasto de CPU no scroll)
+  // Observa se o formulário já está visível no ecrã mobile
   useEffect(() => {
+    if (deviceRecord) return;
     const formEl = formRef.current;
     if (!formEl || typeof IntersectionObserver === 'undefined') return;
 
@@ -59,7 +93,95 @@ export default function Voluntariado() {
 
     observer.observe(formEl);
     return () => observer.disconnect();
-  }, [submitted]);
+  }, [deviceRecord]);
+
+  // Verifica no Supabase o estado atual da inscrição deste dispositivo
+  useEffect(() => {
+    if (!deviceRecord) return;
+
+    const cleanDigits = deviceRecord.phone.replace(/\D/g, '');
+    const digits9 = cleanDigits.startsWith('258')
+      ? cleanDigits.slice(3)
+      : cleanDigits;
+    const possiblePhones = [
+      digits9,
+      `+258 ${digits9}`,
+      `+258${digits9}`,
+      `258${digits9}`,
+    ];
+
+    let isMounted = true;
+
+    const checkApprovalStatus = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('mk_registrations')
+          .select('id, status')
+          .in('phone', possiblePhones)
+          .limit(1);
+
+        if (error || !isMounted) return;
+
+        if (data && data.length > 0) {
+          const serverStatus = (data[0].status || 'pendente') as RegistrationStatus;
+          if (serverStatus !== deviceRecord.status) {
+            const updated: DeviceRegistrationRecord = {
+              ...deviceRecord,
+              status: serverStatus,
+            };
+            setDeviceRecord(updated);
+            localStorage.setItem(DEVICE_LOCK_KEY, JSON.stringify(updated));
+          }
+        }
+      } catch {
+        // Ignorar falhas temporárias de rede
+      }
+    };
+
+    checkApprovalStatus();
+
+    const pollInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) {
+        checkApprovalStatus();
+      }
+    }, 10000);
+
+    const channel = supabase
+      .channel(`candidate_status_${digits9}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'mk_registrations' },
+        () => {
+          checkApprovalStatus();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(pollInterval);
+      supabase.removeChannel(channel);
+    };
+  }, [deviceRecord]);
+
+  // Redireciona automaticamente para o mapa público quando for aceito
+  useEffect(() => {
+    if (deviceRecord?.status !== 'confirmado') return;
+
+    setRedirectCountdown(3);
+    const timer = window.setInterval(() => {
+      setRedirectCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          window.clearInterval(timer);
+          navigate('/mapa', { replace: true });
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [deviceRecord?.status, navigate]);
 
   const scrollToForm = () => {
     formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -101,6 +223,7 @@ export default function Voluntariado() {
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const digitsOnly = e.target.value.replace(/\D/g, '').slice(0, 9);
     setFormData((prev) => ({ ...prev, phone: digitsOnly }));
+    if (duplicatePhoneError) setDuplicatePhoneError(null);
 
     if (touched.phone || digitsOnly.length === 9) {
       setErrors(validateFields(formData.full_name, digitsOnly));
@@ -112,10 +235,15 @@ export default function Voluntariado() {
     setErrors(validateFields(formData.full_name, formData.phone));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    // Bloqueio extra caso este dispositivo já tenha submetido
+    if (deviceRecord) return;
+
     setTouched({ full_name: true, phone: true });
+    setDuplicatePhoneError(null);
+
     const validationErrors = validateFields(formData.full_name, formData.phone);
     setErrors(validationErrors);
 
@@ -123,14 +251,61 @@ export default function Voluntariado() {
       return;
     }
 
+    setCheckingPhone(true);
+
+    try {
+      // Verifica se o número já existe na base de dados (em qualquer formato)
+      const phoneVariants = [
+        formData.phone,
+        `+258 ${formData.phone}`,
+        `+258${formData.phone}`,
+        `258${formData.phone}`,
+      ];
+
+      const { data: existingRows, error: checkError } = await supabase
+        .from('mk_registrations')
+        .select('id')
+        .in('phone', phoneVariants)
+        .limit(1);
+
+      if (checkError) {
+        setDuplicatePhoneError(
+          'Não foi possível validar o número agora. Verifica a tua ligação à internet.'
+        );
+        setCheckingPhone(false);
+        return;
+      }
+
+      if (existingRows && existingRows.length > 0) {
+        setDuplicatePhoneError(
+          'Este número de telemóvel já está registado no campeonato. Não é permitido repetir inscrições.'
+        );
+        setCheckingPhone(false);
+        return;
+      }
+    } catch {
+      setDuplicatePhoneError('Erro de ligação ao verificar disponibilidade do número.');
+      setCheckingPhone(false);
+      return;
+    }
+
+    setCheckingPhone(false);
+
     createRegistration.mutate(
       {
-        full_name: formData.full_name,
+        full_name: formData.full_name.trim(),
         phone: formData.phone,
       },
       {
         onSuccess: () => {
-          setSubmitted(true);
+          const savedRecord: DeviceRegistrationRecord = {
+            full_name: formData.full_name.trim(),
+            phone: formData.phone,
+            status: 'pendente',
+            submitted_at: new Date().toISOString(),
+          };
+          localStorage.setItem(DEVICE_LOCK_KEY, JSON.stringify(savedRecord));
+          setDeviceRecord(savedRecord);
         },
       }
     );
@@ -140,65 +315,150 @@ export default function Voluntariado() {
   const isPhoneValid = /^8[2-7]\d{7}$/.test(formData.phone);
   const progressPercent = (isNameValid ? 50 : 0) + (isPhoneValid ? 50 : 0);
 
-  if (createRegistration.isPending) {
+  if (createRegistration.isPending || checkingPhone) {
     return <LoadingScreen message="A registar lutador na arena..." />;
   }
 
-  if (submitted) {
+  // Ecrã de conclusão e acompanhamento de estado (Bloqueia nova inscrição neste telemóvel)
+  if (deviceRecord) {
+    const isConfirmed = deviceRecord.status === 'confirmado';
+    const isRejected = deviceRecord.status === 'recusado';
+
     return (
       <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-zinc-900 border border-amber-500/40 rounded-3xl p-7 text-center space-y-5">
           <div className="relative mx-auto w-20 h-20 flex items-center justify-center">
-            <div className="absolute inset-0 rounded-full border-2 border-emerald-500/40" />
+            <div
+              className={`absolute inset-0 rounded-full border-2 ${
+                isConfirmed
+                  ? 'border-emerald-500/50'
+                  : isRejected
+                  ? 'border-red-500/50'
+                  : 'border-amber-500/50'
+              }`}
+            />
             <DragonEmblem className="w-16 h-16 min-w-[64px] min-h-[64px]" />
-            <div className="absolute -bottom-1 -right-1 bg-emerald-500 text-zinc-950 rounded-full p-1">
-              <CheckCircle2 className="w-4 h-4" />
+            <div
+              className={`absolute -bottom-1 -right-1 rounded-full p-1 text-zinc-950 ${
+                isConfirmed
+                  ? 'bg-emerald-500'
+                  : isRejected
+                  ? 'bg-red-500 text-white'
+                  : 'bg-amber-500'
+              }`}
+            >
+              {isConfirmed ? (
+                <CheckCircle2 className="w-4 h-4" />
+              ) : isRejected ? (
+                <XCircle className="w-4 h-4" />
+              ) : (
+                <Clock className="w-4 h-4" />
+              )}
             </div>
           </div>
 
           <div className="space-y-1.5">
-            <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold uppercase tracking-widest">
-              Kombatente Registado
-            </span>
-            <h2 className="text-2xl font-black tracking-tight text-white uppercase">
-              Inscrição Confirmada!
-            </h2>
+            {isConfirmed ? (
+              <>
+                <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 text-xs font-bold uppercase tracking-widest">
+                  Estado: Aceite / Confirmado
+                </span>
+                <h2 className="text-2xl font-black tracking-tight text-white uppercase">
+                  Inscrição Aprovada!
+                </h2>
+              </>
+            ) : isRejected ? (
+              <>
+                <span className="inline-block px-3 py-1 rounded-full bg-red-500/15 border border-red-500/40 text-red-400 text-xs font-bold uppercase tracking-widest">
+                  Estado: Recusado
+                </span>
+                <h2 className="text-2xl font-black tracking-tight text-white uppercase">
+                  Inscrição Não Aceite
+                </h2>
+              </>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-400 text-xs font-bold uppercase tracking-widest">
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Estado: Pendente</span>
+                </span>
+                <h2 className="text-2xl font-black tracking-tight text-white uppercase">
+                  Candidatura Enviada!
+                </h2>
+              </>
+            )}
           </div>
 
           <p className="text-zinc-300 text-sm leading-relaxed">
-            Bem-vindo à arena,{' '}
-            <span className="text-amber-400 font-bold">
-              {formData.full_name.trim()}
-            </span>
-            ! O teu lugar no{' '}
-            <span className="text-white font-semibold">
-              Campeonato de Mortal Kombat
-            </span>{' '}
-            está reservado.
+            {isConfirmed ? (
+              <>
+                Parabéns,{' '}
+                <span className="text-amber-400 font-bold">
+                  {deviceRecord.full_name}
+                </span>
+                ! O administrador aceitou a tua inscrição. A redirecionar para o
+                mapa de combates
+                {redirectCountdown !== null ? ` em ${redirectCountdown}s...` : '...'}
+              </>
+            ) : isRejected ? (
+              <>
+                Olá{' '}
+                <span className="text-white font-bold">
+                  {deviceRecord.full_name}
+                </span>
+                . Infelizmente a tua candidatura foi recusada pela organização
+                nesta edição do torneio.
+              </>
+            ) : (
+              <>
+                Olá,{' '}
+                <span className="text-amber-400 font-bold">
+                  {deviceRecord.full_name}
+                </span>
+                ! A tua inscrição está{' '}
+                <strong className="text-amber-300">pendente</strong> até o
+                administrador aceitar ou recusar. Assim que for aceite, serás
+                redirecionado automaticamente para o mapa do torneio.
+              </>
+            )}
           </p>
 
-          <div className="text-xs text-zinc-400 bg-zinc-950 p-4 rounded-2xl border border-zinc-800 space-y-1">
-            <p>Contacto oficial registado:</p>
+          <div className="text-xs text-zinc-400 bg-zinc-950 p-4 rounded-2xl border border-zinc-800 space-y-1.5">
+            <p>Número vinculado a este dispositivo:</p>
             <p className="text-base font-mono font-bold text-amber-400">
-              +258 {formData.phone}
+              +258 {deviceRecord.phone}
             </p>
             <p className="text-[11px] text-zinc-500 pt-1">
-              Receberás a chave dos combates e horários via WhatsApp.
+              Por segurança, cada dispositivo permite apenas uma inscrição oficial.
             </p>
           </div>
 
-          <button
-            onClick={() => {
-              setSubmitted(false);
-              setFormData({ full_name: '', phone: '' });
-              setErrors({});
-              setTouched({});
-              createRegistration.reset();
-            }}
-            className="w-full py-3.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold rounded-xl text-sm cursor-pointer border border-zinc-700"
-          >
-            Registar outro lutador
-          </button>
+          <div className="space-y-2.5 pt-1">
+            {isConfirmed ? (
+              <Link
+                to="/mapa"
+                className="w-full inline-flex items-center justify-center gap-2 py-3.5 px-4 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black uppercase tracking-wider rounded-xl text-xs"
+              >
+                <GitFork className="w-4 h-4" />
+                <span>Ver Mapa de Combates Agora</span>
+              </Link>
+            ) : (
+              <Link
+                to="/mapa"
+                className="w-full inline-flex items-center justify-center gap-2 py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold rounded-xl text-xs border border-zinc-700"
+              >
+                <GitFork className="w-4 h-4 text-amber-400" />
+                <span>Visualizar Mapa do Torneio</span>
+              </Link>
+            )}
+
+            {!isConfirmed && !isRejected && (
+              <p className="text-[11px] text-zinc-500 flex items-center justify-center gap-1.5">
+                <RefreshCw className="w-3 h-3 text-amber-400" />
+                <span>A aguardar validação do administrador...</span>
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -216,7 +476,7 @@ export default function Voluntariado() {
             </span>
           </div>
 
-          <div className="flex items-center gap-2.5 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3">
             <div className="hidden md:flex items-center gap-1.5 text-emerald-400 font-semibold">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               <span>Inscrições Abertas</span>
@@ -228,6 +488,14 @@ export default function Voluntariado() {
                 <strong className="text-white">{registeredCount}</strong> inscritos
               </span>
             </div>
+
+            <Link
+              to="/mapa"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-bold border border-zinc-700"
+            >
+              <GitFork className="w-3.5 h-3.5 text-amber-400" />
+              <span>Ver Mapa</span>
+            </Link>
 
             <Link
               to="/admin/login"
@@ -303,13 +571,13 @@ export default function Voluntariado() {
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-amber-500 font-bold">•</span>
-                    <span>Vagas limitadas confirmadas por ordem de inscrição.</span>
+                    <span>Apenas 1 inscrição permitida por número e telemóvel.</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-amber-500 font-bold">•</span>
                     <span>
-                      A convocatória e horários serão enviados pelo número
-                      registado.
+                      Após aprovação do administrador, terás acesso direto ao
+                      mapa de combates.
                     </span>
                   </li>
                 </ul>
@@ -376,11 +644,13 @@ export default function Voluntariado() {
                 <DragonEmblem className="w-10 h-10 min-w-[40px] min-h-[40px] shrink-0" />
               </div>
 
-              {/* Alerta de Erro da API */}
-              {createRegistration.isError && (
+              {/* Alerta de Número Duplicado ou Erro da API */}
+              {(duplicatePhoneError || createRegistration.isError) && (
                 <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/40 text-xs text-red-300 flex items-center gap-2.5">
                   <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-                  <span>{createRegistration.error.message}</span>
+                  <span>
+                    {duplicatePhoneError || createRegistration.error?.message}
+                  </span>
                 </div>
               )}
 
@@ -453,7 +723,7 @@ export default function Voluntariado() {
                       onBlur={() => handleBlur('phone')}
                       placeholder="840000000"
                       className={`w-full rounded-xl bg-zinc-950 border pl-16 pr-4 py-3.5 text-sm text-white font-mono tracking-widest placeholder-zinc-600 focus:outline-none ${
-                        errors.phone
+                        errors.phone || duplicatePhoneError
                           ? 'border-red-500'
                           : isPhoneValid
                           ? 'border-emerald-500/60 focus:border-emerald-400'
@@ -476,7 +746,7 @@ export default function Voluntariado() {
             <div className="pt-2 space-y-3">
               <button
                 type="submit"
-                disabled={createRegistration.isPending}
+                disabled={createRegistration.isPending || checkingPhone}
                 className="w-full flex items-center justify-center gap-2.5 font-black uppercase tracking-wider py-4 px-6 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer disabled:opacity-50"
               >
                 <Send className="w-4 h-4" />
@@ -484,8 +754,8 @@ export default function Voluntariado() {
               </button>
 
               <p className="text-[11px] text-center text-zinc-500">
-                Ao confirmar, os teus dados ficam registados na lista oficial de
-                participantes do torneio.
+                Ao confirmar, este dispositivo ficará associado à tua inscrição
+                oficial.
               </p>
             </div>
           </form>

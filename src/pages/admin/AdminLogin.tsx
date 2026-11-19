@@ -11,7 +11,10 @@ import {
   LogIn,
 } from 'lucide-react';
 import DragonEmblem from '../../components/DragonEmblem';
-import { ADMIN_AUTH_KEY } from '../../components/ProtectedAdminRoute';
+import {
+  grantAdminSession,
+  revokeAdminSession,
+} from '../../components/ProtectedAdminRoute';
 
 const ADMIN_CREDENTIALS_STORAGE_KEY = 'mk_tournament_admin_credentials_v1';
 const DEFAULT_ADMIN_EMAIL = 'Snyy';
@@ -27,7 +30,7 @@ function getStoredAdminCredentials(): { email: string; password: string } {
       }
     }
   } catch {
-    // Fallback
+    // Fallback para as credenciais padrão
   }
 
   const defaults = { email: DEFAULT_ADMIN_EMAIL, password: DEFAULT_ADMIN_CODE };
@@ -37,7 +40,7 @@ function getStoredAdminCredentials(): { email: string; password: string } {
       JSON.stringify(defaults)
     );
   } catch {
-    // Ignorar
+    // Ignorar se storage estiver indisponível
   }
   return defaults;
 }
@@ -54,7 +57,9 @@ export default function AdminLogin() {
   const redirectTo =
     (location.state as { from?: string } | null)?.from || '/admin/voluntarios';
 
+  // Garante que qualquer sessão antiga está limpa e que as credenciais padrão existem localmente
   useEffect(() => {
+    revokeAdminSession();
     getStoredAdminCredentials();
   }, []);
 
@@ -68,7 +73,7 @@ export default function AdminLogin() {
       emailInput.trim() === stored.email &&
       codeInput === stored.password
     ) {
-      sessionStorage.setItem(ADMIN_AUTH_KEY, 'true');
+      grantAdminSession();
       navigate(redirectTo, { replace: true });
     } else {
       setError('Email ou código incorreto. Confirma os dados do administrador.');

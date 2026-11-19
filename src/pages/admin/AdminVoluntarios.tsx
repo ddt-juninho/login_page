@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   Check,
   X,
@@ -17,6 +17,7 @@ import {
   Sparkles,
   CheckCheck,
   QrCode,
+  LogOut,
 } from 'lucide-react';
 import type {
   PlayerRegistration,
@@ -24,6 +25,7 @@ import type {
 } from '../../types/volunteer';
 import DragonEmblem from '../../components/DragonEmblem';
 import RegistrationQrModal from '../../components/RegistrationQrModal';
+import { revokeAdminSession } from '../../components/ProtectedAdminRoute';
 import { supabase } from '../../lib/supabase';
 
 const CACHE_PLAYERS_KEY = 'mk_admin_players_cache_v1';
@@ -61,6 +63,8 @@ function saveSeenIds(ids: Set<string>) {
 }
 
 export default function AdminVoluntarios() {
+  const navigate = useNavigate();
+
   // Inicia logo com cache local para carregamento instantâneo em internet fraca
   const [players, setPlayers] = useState<PlayerRegistration[]>(() =>
     loadCachedPlayers()
@@ -89,6 +93,11 @@ export default function AdminVoluntarios() {
 
   const isFetchingRef = useRef(false);
   const retryTimeoutRef = useRef<number | null>(null);
+
+  const handleLogout = () => {
+    revokeAdminSession();
+    navigate('/admin/login', { replace: true });
+  };
 
   const fetchPlayers = useCallback(
     async (options?: { silent?: boolean; retryCount?: number }) => {
@@ -415,12 +424,22 @@ export default function AdminVoluntarios() {
 
               <Link
                 to="/"
+                onClick={revokeAdminSession}
                 className="inline-flex items-center gap-2 text-xs font-bold text-zinc-950 bg-amber-500 hover:bg-amber-400 px-3.5 py-2 rounded-xl"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span className="hidden sm:inline">Voltar ao Formulário</span>
                 <span className="sm:hidden">Formulário</span>
               </Link>
+
+              <button
+                onClick={handleLogout}
+                title="Terminar sessão do administrador"
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-red-400 bg-red-500/10 hover:bg-red-500/20 px-3 py-2 rounded-xl border border-red-500/30 cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sair</span>
+              </button>
             </div>
           </div>
         </header>
@@ -528,6 +547,7 @@ export default function AdminVoluntarios() {
               </p>
               <Link
                 to="/"
+                onClick={revokeAdminSession}
                 className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-400 text-xs font-bold border border-zinc-700"
               >
                 <UserPlus className="w-4 h-4" />
@@ -658,6 +678,7 @@ export default function AdminVoluntarios() {
       <footer className="border-t border-zinc-900 py-5 px-4 text-center">
         <Link
           to="/"
+          onClick={revokeAdminSession}
           className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-amber-400"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
